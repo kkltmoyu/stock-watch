@@ -1,11 +1,15 @@
 const vscode = require('vscode');
 const axios = require('axios');
-const baseUrl = 'https://api.money.126.net/data/feed/';
+// const baseUrl = 'https://api.money.126.net/data/feed/';
+const baseUrl = 'http://qt.gtimg.cn/q=';
+
 let statusBarItems = {};
 let stockCodes = [];
 let updateInterval = 10000;
 let timer = null;
 let showTimer = null;
+const config = vscode.workspace.getConfiguration();
+const names = config.get('stock-watch.stocksName');
 
 function activate(context) {
 	init();
@@ -73,7 +77,7 @@ function getStockCodes() {
 			} else if (code.indexOf('hk') > -1) {
 				return code;
 			} else {
-				return code.toLowerCase().replace('sz', '1').replace('sh', '0');
+				return code.toLowerCase().replace('SZ', 'sz').replace('SH', 'sh');
 			}
 		} else {
 			return (code[0] === '6' ? '0' : '1') + code;
@@ -104,15 +108,29 @@ function isShowTime() {
 function getItemText(item) {
 	return `「${item.name}」${keepDecimal(item.price, calcFixedNumber(item))} ${
 		item.percent >= 0 ? '📈' : '📉'
-	} ${keepDecimal(item.percent * 100, 2)}%`;
+	} ${keepDecimal(item.percent, 2)}%`;
 }
 
 function getTooltipText(item) {
-	return `【今日行情】${item.type}${item.symbol}\n涨跌：${
+	return `${item.type}${item.symbol}\n涨跌：${
 		item.updown
 	}   百分：${keepDecimal(item.percent * 100, 2)}%\n最高：${
 		item.high
 	}   最低：${item.low}\n今开：${item.open}   昨收：${item.yestclose}`;
+}
+
+function getXQItemText(item) {
+	return `「${item.name}」${keepDecimal(item.current, calcXQFixedNumber(item))} ${
+		item.percent >= 0 ? '📈' : '📉'
+	} ${keepDecimal(item.percent, 2)}%`;
+}
+
+function getXQTooltipText(item) {
+	return `【今日】${item.symbol}\n涨跌：${
+		item.chg
+	}   百分：${keepDecimal(item.percent, 2)}%\n最高：${
+		item.high
+	}   最低：${item.low}\n今开：${item.open}   昨收：${item.last_close}`;
 }
 
 function getItemColor(item) {
@@ -122,23 +140,74 @@ function getItemColor(item) {
 
 	return item.percent >= 0 ? riseColor : fallColor;
 }
-
 function fetchAllData() {
-	console.log('fetchAllData');
+	let that = this;
+	const config = {
+		timeout: 15000,
+		headers: {
+			'Accept': 'application/json',
+			'Content-Type': 'application/json;charset=utf-8',
+			// 'Connection':'keep-alive'
+		},
+		url: `${baseUrl}${stockCodes.join(',')}`,
+		method: 'GET',
+		transformResponse: [
+			function (data) {
+				console.log('global is ', global)
+				return global.decodeURI(data)
+				// let FileReader = global.window.FileReader;
+				// let reader = new FileReader();
+				// reader.readAsText(data, 'GBK');
+				// reader.onload = function (e) {
+				// 	let obj = JSON.parse(reader.result);
+				// 	that.data = obj
+				// }
+				// return data;
+
+			}
+		]
+		
+		// withCredentials: false,
+	}
+
 	axios
-		.get(`${baseUrl}${stockCodes.join(',')}?callback=a`)
+		.request({
+			...config
+		})
+		
 		.then(
-			(rep) => {
+			(res) => {
 				try {
-					const result = JSON.parse(rep.data.slice(2, -2));
+					let result = res.data.split(';');
+					result = result.splice(0,result.length - 1)
 					let data = [];
-					Object.keys(result).map((item) => {
-						if (!result[item].code) {
-							result[item].code = item; //兼容港股美股
-						}
-						data.push(result[item]);
-					});
-					displayData(data);
+					result.map((item, index) => {
+						let arr = item.split('"');
+						let target = arr[1].split('~');
+						let obj = {
+							symbol: stockCodes[index],
+							name: names[index],
+							high: target[33],
+							low: target[34],
+							open: target[5],
+							yestclose: target[4],
+							last_close: target[4],
+							updown: target[31],
+							chg: target[31],
+							percent: target[32],
+							current: target[3],
+							price: target[3]
+						} 
+						data.push(obj);
+					})
+					// Object.keys(result).map((item,index) => {
+					// 	if (!result[item].symbol) {
+					// 		result[item].symbol = item;
+					// 	}
+					// 	data.push(result[item]);
+					// });
+					displayXQData(data);
+
 				} catch (error) {}
 			},
 			(error) => {
@@ -163,6 +232,19 @@ function displayData(data) {
 	});
 }
 
+function displayXQData(data) {
+	 data.map((item) => {
+	 	const key = item.symbol;
+	 	if (statusBarItems[key]) {
+	 		statusBarItems[key].text = getXQItemText(item);
+	 		statusBarItems[key].color = getItemColor(item);
+	 		statusBarItems[key].tooltip = getXQTooltipText(item);
+	 	} else {
+	 		statusBarItems[key] = createXQStatusBarItem(item);
+	 	}
+	 });
+ }
+
 function createStatusBarItem(item) {
 	const barItem = vscode.window.createStatusBarItem(
 		vscode.StatusBarAlignment.Left,
@@ -171,6 +253,18 @@ function createStatusBarItem(item) {
 	barItem.text = getItemText(item);
 	barItem.color = getItemColor(item);
 	barItem.tooltip = getTooltipText(item);
+	barItem.show();
+	return barItem;
+}
+
+function createXQStatusBarItem(item) {
+	const barItem = vscode.window.createStatusBarItem(
+		vscode.StatusBarAlignment.Left,
+		0 - stockCodes.indexOf(item.symbol)
+	);
+	barItem.text = getXQItemText(item);
+	barItem.color = getItemColor(item);
+	barItem.tooltip = getXQTooltipText(item);
 	barItem.show();
 	return barItem;
 }
@@ -206,6 +300,38 @@ function calcFixedNumber(item) {
 		String(item.updown).indexOf('.') === -1
 			? 0
 			: String(item.updown).length - String(item.updown).indexOf('.') - 1;
+	var max = Math.max(high, low, open, yest, updown);
+
+	if (max === 0) {
+		max = 2;
+	}
+
+	return max;
+}
+
+function calcXQFixedNumber(item) {
+	var high =
+		String(item.high).indexOf('.') === -1 ?
+		0 :
+		String(item.high).length - String(item.high).indexOf('.') - 1;
+	var low =
+		String(item.low).indexOf('.') === -1 ?
+		0 :
+		String(item.low).length - String(item.low).indexOf('.') - 1;
+	var open =
+		String(item.open).indexOf('.') === -1 ?
+		0 :
+		String(item.open).length - String(item.open).indexOf('.') - 1;
+	var yest =
+		String(item.last_close).indexOf('.') === -1 ?
+		0 :
+		String(item.last_close).length -
+		String(item.last_close).indexOf('.') -
+		1;
+	var updown =
+		String(item.chg).indexOf('.') === -1 ?
+		0 :
+		String(item.chg).length - String(item.chg).indexOf('.') - 1;
 	var max = Math.max(high, low, open, yest, updown);
 
 	if (max === 0) {
